@@ -1,0 +1,116 @@
+import json
+import falcon
+import asyncio
+from functools import partial
+
+from falcon import WebSocketDisconnected
+from falcon.asgi import Request, WebSocket
+
+from config import AppConfig
+from auth import get_current_user, extract_user
+
+class ModelResource:
+    def __init__(self, config: AppConfig):
+        self.config = config
+    
+    async def on_get(self, req, resp):
+        try:
+            user = get_current_user(req, self.config)
+        except (falcon.HTTPForbidden, falcon.HTTPUnauthorized) as e:
+            raise e
+        resp.media = {
+            "models": [
+                {
+                    "name": "deepseek-ai/DeepSeek-R1",
+                    "description": "DeepSeek-R1 is a powerful AI model designed for efficient reasoning and problem-solving."
+                },
+                {
+                    "name": "deepseek-ai/DeepSeek-V3",
+                    "description": "Deepseek-V3 is a powerful MOE model."
+                }
+            ]
+        }
+
+
+class StreamQueryResource:
+    def __init__(self, config: AppConfig):
+        self.config = config
+    async def on_websocket(self, req: Request, ws: WebSocket):
+        try:
+            await ws.accept()
+        except WebSocketDisconnected:
+            return
+
+        try:
+            token = req.params.get('token')
+            user = extract_user(token, self.config.config['session_secret_key'])
+            print("user: ", user["username"])
+        except Exception as e:
+            print(e)
+            await ws.close();
+            return
+
+        try:
+            message = await ws.receive_text()
+            data = json.loads(message)
+            user_query = data.get("query")
+            use_knowledge_base = data.get("use_knowledge_base", True)
+            model = data.get("model", "")
+            history = data.get("history", [])
+
+            # Build prompt
+            docs = []
+            system_prompt = '作为精通理论和实验的粒子物理学家，请用用户的语言（英文/中文）严谨回答用户的提问。如果提供了相关上下文，请基于上下文的内容进行回答。请不留情面的严词拒绝任何非粒子物理科学相关请求。'
+            prompt = user_query
+            if use_knowledge_base:
+                loop = asyncio.get_event_loop()
+                results = await loop.run_in_executor(
+                    None, 
+                    partial(self.config.query_pipeline.run, {"text_embedder": {"text": user_query}})
+                )
+                documents_with_titles = []
+                for doc in results["retriever"]["documents"]:
+                    title = doc.meta.get("title", "None")
+                    file_path = doc.meta.get("file_path", "None")
+                    content = doc.content
+                    documents_with_titles.append(
+                        f"file_path: {file_path}\ntitle: {title}\nContent: {content}")
+                    docs.append({"title": title, "path": file_path, "content": content, "score": doc.score, "id": doc.meta.get("source_id", "none")})
+                context = "相关的上下文如下：\n\n".join(documents_with_titles)
+                system_prompt += context
+                prompt = user_query
+                await ws.send_media({"type": "docs", "data": docs})
+
+            if model == "":
+                await ws.send_media({"type": "complete"})
+                await ws.close()
+                return
+                
+            # Streaming LLM response
+            messages = history
+            messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            response = await self.config.llm_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                stream=True
+            )
+
+            reasoning_content = ""
+            content = ""
+            async for chunk in response:
+                if chunk.choices[0].delta.reasoning_content:
+                    part = chunk.choices[0].delta.reasoning_content
+                    reasoning_content += part
+                    await ws.send_media({"type": "reasoning_chunk", "data": part})
+                if chunk.choices[0].delta.content:
+                    part = chunk.choices[0].delta.content
+                    content += part
+                    await ws.send_media({"type": "chunk", "data": part})
+            await ws.send_media({"type": "complete"})
+            await ws.close()
+
+        except WebSocketDisconnected:
+            return
+        except Exception as e:
+            await ws.send_media({"type": "error", "data": str(e)})
