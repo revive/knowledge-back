@@ -27,12 +27,12 @@ class LoginResource:
 class OAuthCallbackResource:
 
     def __init__(self, config: AppConfig):
-        self.config = config.config
+        self.config = config
 
     async def on_get(self, req, resp):
         code = req.params.get('code')
         state = req.params.get('state')
-        config = self.config
+        config = self.config.config
         if not code or not state:
             raise falcon.HTTPBadRequest(title='Missing Code or State')
 
@@ -47,7 +47,7 @@ class OAuthCallbackResource:
         response = oauth.get(config['oauth_user_api_url'])
         user_data = response.json()
 
-        access_token = create_access_token(data={"user": user_data}, config=config)
+        access_token = create_access_token(data={"user": user_data}, config=self.config)
 
         login_url = config['login_url'] + "?access_token=" + access_token
         raise falcon.HTTPFound(location=login_url)
