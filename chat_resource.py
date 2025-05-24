@@ -80,6 +80,12 @@ class StreamQueryResource:
             await ws.close();
             return
 
+        response = None
+        user_query = None
+        usage = None
+        reasoning_content = ""
+        content = ""
+        system_prompt = ""
         try:
             message = await ws.receive_text()
             data = json.loads(message)
@@ -123,20 +129,23 @@ class StreamQueryResource:
             response = await self.config.llm_client.chat.completions.create(
                 model=model,
                 messages=messages,
-                stream=True
+                stream=True,
+                stream_options={'include_usage': True}
             )
 
-            reasoning_content = ""
-            content = ""
             async for chunk in response:
-                if chunk.choices[0].delta.reasoning_content:
-                    part = chunk.choices[0].delta.reasoning_content
-                    reasoning_content += part
-                    await ws.send_media({"type": "reasoning_chunk", "data": part})
-                if chunk.choices[0].delta.content:
-                    part = chunk.choices[0].delta.content
-                    content += part
-                    await ws.send_media({"type": "chunk", "data": part})
+                if len(chunk.choices) > 0:
+                    if chunk.choices[0].delta.reasoning_content:
+                        part = chunk.choices[0].delta.reasoning_content
+                        reasoning_content += part
+                        await ws.send_media({"type": "reasoning_chunk", "data": part})
+                    if chunk.choices[0].delta.content:
+                        part = chunk.choices[0].delta.content
+                        content += part
+                        await ws.send_media({"type": "chunk", "data": part})
+                if chunk.usage:
+                    usage = chunk.usage
+                
             await ws.send_media({"type": "complete"})
             await ws.close()
 
@@ -146,8 +155,21 @@ class StreamQueryResource:
             await ws.send_media({"type": "error", "data": str(e)})
         finally:
             # write to the database
-            if response:
-                usage = response.usage
+            try:
+                prompt_tokens = len(user_query) + len(system_prompt)
+                completion_tokens = len(content) + len(reasoning_content)
+                total_tokens = prompt_tokens + completion_tokens
+                
+                if usage:
+                    prompt_tokens = usage.prompt_tokens
+                    completion_tokens = usage.completion_tokens
+                    total_tokens = usage.total_tokens
+                else:
+                    print('no usage found in response')
+
                 async with aiosqlite.connect(self.log_db_path) as db:
                     await db.execute("insert into activity_logs(timestamp, user_id, user_name, query, prompt_tokens, completion_tokens, total_tokens) values(?,?,?,?,?,?,?)", (current_time_to_iso_utc(), user_id, user_name, user_query, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens))
                     await db.commit()
+                
+            except Exception as e:
+                print(f'Database write failed: {e}')
