@@ -26,6 +26,7 @@ class AppConfig:
         query_pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
 
         return query_pipeline
+
 def load_config(config_file: Path):
     config = {
         'api_key': None,
@@ -37,7 +38,8 @@ def load_config(config_file: Path):
         'login_url': 'http://localhost:8833/login',
         'oauth_token_url': "https://account.pandax.sjtu.edu.cn/oauth/token",
         'oauth_authorize_url': "https://account.pandax.sjtu.edu.cn/oauth/authorize",
-        'oauth_user_api_url': "https://account.pandax.sjtu.edu.cn/api/v4/user"
+        'oauth_user_api_url': "https://account.pandax.sjtu.edu.cn/api/v4/user",
+        'log_db_path': "./activity_log.db"
     }
 
     if config_file.exists():

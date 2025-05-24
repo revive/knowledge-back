@@ -9,6 +9,14 @@ from falcon.asgi import Request, WebSocket
 from config import AppConfig
 from auth import get_current_user, extract_user
 
+import sqlite3
+import aiosqlite
+
+from datetime import datetime, timezone
+
+def current_time_to_iso_utc():
+    return datetime.now(timezone.utc).isoformat()
+
 class ModelResource:
     def __init__(self, config: AppConfig):
         self.config = config
@@ -35,6 +43,26 @@ class ModelResource:
 class StreamQueryResource:
     def __init__(self, config: AppConfig):
         self.config = config
+        self.log_db_path = config.config["log_db_path"]
+        self.__init_db();
+
+    def __init_db(self):
+        with sqlite3.connect(self.log_db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS activity_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    user_name TEXT NOT NULL,
+                    query TEXT,
+                    prompt_tokens INTEGER,
+                    completion_tokens INTEGER,
+                    total_tokens INTEGER
+                );
+            ''')
+            conn.commit()
+        
     async def on_websocket(self, req: Request, ws: WebSocket):
         try:
             await ws.accept()
@@ -45,6 +73,8 @@ class StreamQueryResource:
             token = req.params.get('token')
             user = extract_user(token, self.config.config['session_secret_key'])
             print("user: ", user["username"])
+            user_name = user["username"]
+            user_id = user["id"]
         except Exception as e:
             print(e)
             await ws.close();
@@ -114,3 +144,10 @@ class StreamQueryResource:
             return
         except Exception as e:
             await ws.send_media({"type": "error", "data": str(e)})
+        finally:
+            # write to the database
+            if response:
+                usage = response.usage
+                async with aiosqlite.connect(self.log_db_path) as db:
+                    await db.execute("insert into activity_logs(timestamp, user_id, user_name, query, prompt_tokens, completion_tokens, total_tokens) values(?,?,?,?,?,?,?)", (current_time_to_iso_utc(), user_id, user_name, user_query, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens))
+                    await db.commit()
