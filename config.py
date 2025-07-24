@@ -31,7 +31,7 @@ def load_config(config_file: Path):
     config = {
         'api_key': None,
         'api_base_url': None,
-        'session_secret_key': "4d4a8434496f9c1041542cb1088c0f5837bc533456c985e1",
+        'session_secret_key': "",
         'client_id': None,
         'client_secret': None,
         'redirect_url': None,
